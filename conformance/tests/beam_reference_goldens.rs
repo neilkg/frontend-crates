@@ -462,19 +462,21 @@ impl std::fmt::Debug for Subset {
 #[test]
 fn corpus_loads_with_the_recorded_shape() {
     let cases = load();
-    assert_eq!(cases.len(), 288, "288 beam-template cases were extracted");
+    assert_eq!(
+        cases.len(),
+        248,
+        "248 current Beam-template cases were extracted"
+    );
     let plain = cases.iter().filter(|c| c.prefix == PLAIN_PREFIX).count();
-    assert_eq!(plain, 217, "217 cases use the plain assistant start anchor");
+    assert_eq!(plain, 1, "the source now records full prompt histories");
     let prefilled = cases
         .iter()
         .filter(|c| subset_of(c) == Some(Subset::Prefilled))
         .count();
     let not_applicable = cases.iter().filter(|c| subset_of(c).is_none()).count();
-    // The remaining 71: 31 start from a state Dynamo can set (empty prefix or a history
-    // ending in the anchor: 22; reply prefill: 4; thought prefill: 5), 40 are shapes
-    // Dynamo's prompt never produces (no anchor, a marker or word cut in half, a
-    // prefill inside a tool body).
-    assert_eq!((prefilled, not_applicable), (31, 40));
+    // Histories ending at the assistant anchor and supported channel prefills
+    // are replayed; partial markers and tool-body prefills remain inapplicable.
+    assert_eq!((prefilled, not_applicable), (223, 24));
     assert!(
         cases
             .iter()
