@@ -150,3 +150,15 @@ known_divergences:
   - id: gen-586
     routes: [v2]
     reason: "N: The frozen reference rejects digit-leading tool names; V2 accepts 2fa_check under the current recipient grammar."
+  - id: gen-126
+    routes: [v2]
+    reason: "A: The frozen reference exposes the call token in final-channel text; V2 consumes it as an answer terminator."
+  - id: gen-259
+    routes: [v2]
+    reason: "A: The frozen reference exposes the call token in final-channel text; V2 consumes it as an answer terminator."
+  - id: gen-306
+    routes: [v2]
+    reason: "A: The frozen reference exposes the call token in final-channel text; V2 consumes it as an answer terminator."
+  - id: gen-473
+    routes: [v2]
+    reason: "A: The frozen reference exposes the call token in final-channel text; V2 consumes it as an answer terminator."
