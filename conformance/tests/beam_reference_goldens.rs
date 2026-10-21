@@ -13,7 +13,7 @@
 //! directions: an unlisted mismatch fails, and a listed case that no longer mismatches fails.
 //!
 //! Both routes are replayed: the V2 unified parser, and the V1 pair (reasoning parser,
-//! then tool parser over the text it forwards). They share one divergence list.
+//! then tool parser over the text it forwards). Route-specific divergences are marked explicitly.
 //!
 //! The recorded prompt prefix selects the parser's starting state: the plain anchor
 //! (`<|start|>assistant`, an empty prefix, or a history ending in the anchor) starts
@@ -266,7 +266,7 @@ fn clip(s: &str) -> String {
     }
 }
 
-fn known_divergences() -> BTreeMap<String, String> {
+fn known_divergences(route: &str) -> BTreeMap<String, String> {
     let doc: Value = serde_yaml::from_str::<serde_yaml::Value>(KNOWN)
         .map(|y| serde_json::to_value(y).unwrap())
         .expect("known divergences yaml");
@@ -275,6 +275,11 @@ fn known_divergences() -> BTreeMap<String, String> {
         .map(|entries| {
             entries
                 .iter()
+                .filter(|e| {
+                    e["routes"]
+                        .as_array()
+                        .is_none_or(|routes| routes.iter().any(|r| r == route))
+                })
                 .map(|e| {
                     let id = e["id"].as_str().expect("id").to_string();
                     let reason = e["reason"].as_str().expect("reason").to_string();
@@ -407,7 +412,7 @@ fn check(
 
 fn replay_v2(subset: Subset) {
     let cases = load();
-    let known = known_divergences();
+    let known = known_divergences("v2");
     let mut mismatches = BTreeMap::new();
     let mut replayed = BTreeSet::new();
     for case in cases.iter().filter(|c| subset_of(c) == Some(subset)) {
@@ -427,7 +432,7 @@ fn replay_v2(subset: Subset) {
 
 async fn replay_v1(subset: Subset) {
     let cases = load();
-    let known = known_divergences();
+    let known = known_divergences("v1");
     let mut mismatches = BTreeMap::new();
     let mut replayed = BTreeSet::new();
     for case in cases.iter().filter(|c| subset_of(c) == Some(subset)) {

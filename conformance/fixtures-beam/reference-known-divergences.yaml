@@ -112,3 +112,41 @@ known_divergences:
     reason: "P: reply prefill; the reference ends the reply at the first `<|end|>` (inside a quoted value of narrated tool markup) and drops the rest, V1/V2 keep the rest of the stream as reply text with the markers stripped."
   - id: gen-347
     reason: "P: reply prefill; the reference ends the reply at its first terminator and drops the rest, V1/V2 keep the rest of the stream as reply text with the markers stripped."
+
+# Current V2 template behavior differs from this frozen reference.
+  - id: gen-6
+    routes: [v2]
+    reason: "N: The frozen reference rejects digit-leading tool names; V2 accepts 2fa_check under the current recipient grammar."
+  - id: gen-43
+    routes: [v2]
+    reason: "N: The frozen reference rejects digit-leading tool names; V2 accepts 2fa_check under the current recipient grammar."
+  - id: gen-120
+    routes: [v2]
+    reason: "N: The frozen reference rejects digit-leading tool names; V2 accepts 2fa_check under the current recipient grammar."
+  - id: gen-172
+    routes: [v2]
+    reason: "N: The frozen reference rejects digit-leading tool names; V2 accepts 2fa_check under the current recipient grammar."
+  - id: gen-247
+    routes: [v2]
+    reason: "N: The frozen reference rejects digit-leading tool names; V2 accepts 2fa_check under the current recipient grammar."
+  - id: gen-323
+    routes: [v2]
+    reason: "N: The frozen reference rejects digit-leading tool names; V2 accepts 2fa_check under the current recipient grammar."
+  - id: gen-326
+    routes: [v2]
+    reason: "N: The frozen reference rejects digit-leading tool names; V2 accepts 2fa_check under the current recipient grammar."
+  - id: gen-467
+    routes: [v2]
+    reason: "N: The frozen reference rejects digit-leading tool names; V2 accepts 2fa_check under the current recipient grammar."
+  - id: gen-514
+    routes: [v2]
+    reason: "N: The frozen reference rejects digit-leading tool names; V2 accepts 2fa_check under the current recipient grammar."
+  - id: gen-529
+    routes: [v2]
+    reason: "N: The frozen reference rejects digit-leading tool names; V2 accepts 2fa_check under the current recipient grammar."
+  - id: gen-542
+    routes: [v2]
+    reason: "N: The frozen reference rejects digit-leading tool names; V2 accepts 2fa_check under the current recipient grammar."
+  - id: gen-586
+    routes: [v2]
+    reason: "N: The frozen reference rejects digit-leading tool names; V2 accepts 2fa_check under the current recipient grammar."

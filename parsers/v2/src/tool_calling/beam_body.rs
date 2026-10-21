@@ -59,30 +59,18 @@ impl std::fmt::Display for BeamBodyError {
 
 impl std::error::Error for BeamBodyError {}
 
-/// `[a-zA-Z_][a-zA-Z0-9_.-]*`
+/// Beam's template name class, with ASCII whitespace explicit for XGrammar.
+pub(crate) const NAME_PATTERN: &str = r"[^ \t\n\r\f\v<]+";
+pub(crate) const NAME_NEGATED_CLASS: &str = r" \t\n\r\f\v<";
+
 pub fn is_valid_recipient(name: &str) -> bool {
-    let mut chars = name.chars();
-    chars
-        .next()
-        .is_some_and(|c| c.is_ascii_alphabetic() || c == '_')
-        && chars.all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '.' | '-'))
+    !name.is_empty() && recipient_len(name) == name.len()
 }
 
-/// Length of the longest valid recipient prefix of `text` (0 when none).
+/// Length in bytes of the longest prefix without ASCII whitespace or `<`.
 pub fn recipient_len(text: &str) -> usize {
-    let mut end = 0;
-    for (i, c) in text.char_indices() {
-        let ok = if i == 0 {
-            c.is_ascii_alphabetic() || c == '_'
-        } else {
-            c.is_ascii_alphanumeric() || matches!(c, '_' | '.' | '-')
-        };
-        if !ok {
-            break;
-        }
-        end = i + c.len_utf8();
-    }
-    end
+    text.find([' ', '\t', '\n', '\r', '\x0c', '\x0b', '<'])
+        .unwrap_or(text.len())
 }
 
 /// How far a JSON value that has STARTED at byte zero of `text` has got.
@@ -1356,10 +1344,22 @@ mod tests {
 
     #[test]
     fn recipient_grammar() {
-        for ok in ["weather", "_x", "a.b-c9", "functions.get_weather"] {
+        for ok in [
+            "weather",
+            "_x",
+            "a.b-c9",
+            "functions.get_weather",
+            "9a",
+            "-a",
+            ".a",
+            "é",
+            "a:b",
+            "a/b",
+            "a\u{a0}b",
+        ] {
             assert!(is_valid_recipient(ok), "{ok}");
         }
-        for bad in ["", "9a", "-a", ".a", "a b", "é"] {
+        for bad in ["", "a b", "a<b", "a\t", "a\n", "a\r", "a\x0b", "a\x0c"] {
             assert!(!is_valid_recipient(bad), "{bad}");
         }
         assert_eq!(recipient_len("get_weather<|channel|>"), 11);
