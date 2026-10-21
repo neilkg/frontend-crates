@@ -27,3 +27,4 @@ pub mod error;
 #[cfg(feature = "protocol-schema")]
 pub mod schema;
 pub mod types;
+pub mod validation;
