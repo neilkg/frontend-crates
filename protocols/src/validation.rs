@@ -18,18 +18,26 @@ pub struct ValidationError {
     pub field: &'static str,
     /// The library constraint description, without a transport prefix.
     pub message: &'static str,
+    /// Rust Display of the rejected explicit number, formatted only on failure.
+    /// This preserves typed nonfinite values such as NaN/inf; it is not the original JSON text.
+    pub value: String,
 }
 
-/// Returns the supplied library diagnostic when a scalar check fails.
-fn check(
-    accepted: bool,
+/// Accepts None or a value satisfying the predicate; formats rejected values only on failure.
+/// Returns the supplied library diagnostic without mutating or defaulting the input.
+fn check<T: Copy + std::fmt::Display>(
+    value: Option<T>,
+    accepted: impl FnOnce(T) -> bool,
     field: &'static str,
     message: &'static str,
 ) -> Result<(), ValidationError> {
-    if accepted {
-        Ok(())
-    } else {
-        Err(ValidationError { field, message })
+    match value {
+        Some(value) if !accepted(value) => Err(ValidationError {
+            field,
+            message,
+            value: value.to_string(),
+        }),
+        _ => Ok(()),
     }
 }
 
@@ -47,7 +55,8 @@ pub mod openai {
     /// Other explicit values return a library diagnostic, not a backend HTTP error.
     pub fn validate_temperature(value: Option<f32>) -> Result<(), ValidationError> {
         check(
-            value.is_none_or(is_valid_temperature),
+            value,
+            is_valid_temperature,
             "temperature",
             "must be finite and in [0, 2]",
         )
@@ -62,7 +71,8 @@ pub mod openai {
     /// Other explicit values return a library diagnostic, not a backend HTTP error.
     pub fn validate_top_p(value: Option<f32>) -> Result<(), ValidationError> {
         check(
-            value.is_none_or(is_valid_top_p),
+            value,
+            is_valid_top_p,
             "top_p",
             "must be finite and in [0, 1]",
         )
@@ -77,7 +87,8 @@ pub mod openai {
     /// Other explicit values return a library diagnostic, not a backend HTTP error.
     pub fn validate_frequency_penalty(value: Option<f32>) -> Result<(), ValidationError> {
         check(
-            value.is_none_or(is_valid_frequency_penalty),
+            value,
+            is_valid_frequency_penalty,
             "frequency_penalty",
             "must be finite and in [-2, 2]",
         )
@@ -92,7 +103,8 @@ pub mod openai {
     /// Other explicit values return a library diagnostic, not a backend HTTP error.
     pub fn validate_presence_penalty(value: Option<f32>) -> Result<(), ValidationError> {
         check(
-            value.is_none_or(is_valid_presence_penalty),
+            value,
+            is_valid_presence_penalty,
             "presence_penalty",
             "must be finite and in [-2, 2]",
         )
@@ -105,7 +117,8 @@ pub mod openai {
     /// Pass the existing u8 request field with `value.map(i32::from)`.
     pub fn validate_completion_logprobs(value: Option<i32>) -> Result<(), ValidationError> {
         check(
-            value.is_none_or(|value| (0..=5).contains(&value)),
+            value,
+            |value| (0..=5).contains(&value),
             "logprobs",
             "must be in [0, 5]",
         )
@@ -176,11 +189,24 @@ pub mod vllm {
     };
     pub use super::shared::{is_valid_min_p, is_valid_top_p};
 
+    /// Accepts None or finite min_p in [0, 1], without mutation or defaults.
+    /// Other explicit values return a library diagnostic carrying their Rust Display.
+    /// This adapter does not establish engine HTTP-null admission or backend diagnostics.
+    pub fn validate_min_p(value: Option<f32>) -> Result<(), ValidationError> {
+        check(
+            value,
+            is_valid_min_p,
+            "min_p",
+            "must be finite and in [0, 1]",
+        )
+    }
+
     /// Accepts None or top_p that is finite and in (0, 1], without mutation or defaults.
     /// Other explicit values return a library diagnostic, not a backend HTTP error.
     pub fn validate_top_p(value: Option<f32>) -> Result<(), ValidationError> {
         check(
-            value.is_none_or(is_valid_top_p),
+            value,
+            is_valid_top_p,
             "top_p",
             "must be finite and in (0, 1]",
         )
@@ -197,7 +223,8 @@ pub mod vllm {
     /// this helper deliberately does not reproduce complete vLLM admission.
     pub fn validate_completion_logprobs(value: Option<i32>) -> Result<(), ValidationError> {
         check(
-            value.is_none_or(|value| (0..=20).contains(&value)),
+            value,
+            |value| (0..=20).contains(&value),
             "logprobs",
             "must be in [0, 20]",
         )
@@ -249,6 +276,18 @@ pub mod sglang {
     };
     pub use super::shared::{is_valid_min_p, is_valid_top_p};
 
+    /// Accepts None or finite min_p in [0, 1], without mutation or defaults.
+    /// Other explicit values return a library diagnostic carrying their Rust Display.
+    /// This adapter does not establish engine HTTP-null admission or backend diagnostics.
+    pub fn validate_min_p(value: Option<f32>) -> Result<(), ValidationError> {
+        check(
+            value,
+            is_valid_min_p,
+            "min_p",
+            "must be finite and in [0, 1]",
+        )
+    }
+
     /// Returns whether a parsed temperature is finite and nonnegative; rejects NaN and infinities.
     pub fn is_valid_temperature(value: f32) -> bool {
         value.is_finite() && value >= 0.0
@@ -258,7 +297,8 @@ pub mod sglang {
     /// Other explicit values return a library diagnostic, not a backend HTTP error.
     pub fn validate_temperature(value: Option<f32>) -> Result<(), ValidationError> {
         check(
-            value.is_none_or(is_valid_temperature),
+            value,
+            is_valid_temperature,
             "temperature",
             "must be finite and nonnegative",
         )
@@ -268,7 +308,8 @@ pub mod sglang {
     /// Other explicit values return a library diagnostic, not a backend HTTP error.
     pub fn validate_top_p(value: Option<f32>) -> Result<(), ValidationError> {
         check(
-            value.is_none_or(is_valid_top_p),
+            value,
+            is_valid_top_p,
             "top_p",
             "must be finite and in (0, 1]",
         )

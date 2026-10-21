@@ -117,7 +117,8 @@ fn fixed_completion_logprobs_contract_has_distinguishing_counts() {
         vllm::validate_completion_logprobs(Some(-1)).unwrap_err(),
         ValidationError {
             field: "logprobs",
-            message: "must be in [0, 20]"
+            message: "must be in [0, 20]",
+            value: "-1".to_owned(),
         },
     );
 }
@@ -246,5 +247,72 @@ fn library_diagnostics_do_not_claim_backend_error_shapes() {
             validate(Some(0.0)).unwrap_err().to_string(),
             "top_p: must be finite and in (0, 1]"
         );
+    }
+}
+
+#[test]
+fn errors_preserve_rejected_numeric_values_without_changing_display() {
+    type FloatValidator = fn(Option<f32>) -> Result<(), ValidationError>;
+    let validators: [(FloatValidator, f32); 9] = [
+        (openai::validate_temperature, 2.5),
+        (openai::validate_top_p, 1.5),
+        (openai::validate_frequency_penalty, -2.5),
+        (openai::validate_presence_penalty, 2.5),
+        (vllm::validate_top_p, -0.0),
+        (sglang::validate_temperature, -1.5),
+        (sglang::validate_top_p, 0.0),
+        (vllm::validate_min_p, -0.5),
+        (sglang::validate_min_p, 1.5),
+    ];
+    for (validate, invalid) in validators {
+        assert!(validate(None).is_ok());
+        let error = validate(Some(invalid)).unwrap_err();
+        assert_eq!(error.value, invalid.to_string());
+        assert_eq!(
+            error.to_string(),
+            format!("{}: {}", error.field, error.message)
+        );
+        for (value, expected) in [
+            (f32::NAN, "NaN"),
+            (f32::INFINITY, "inf"),
+            (f32::NEG_INFINITY, "-inf"),
+        ] {
+            let error = validate(Some(value)).unwrap_err();
+            assert_eq!(error.value, expected);
+            assert_eq!(error, error.clone());
+        }
+    }
+    assert_eq!(vllm::validate_top_p(Some(-0.0)).unwrap_err().value, "-0");
+    for validate in [
+        openai::validate_completion_logprobs,
+        vllm::validate_completion_logprobs,
+    ] {
+        for (value, expected) in [
+            (i32::MIN, "-2147483648"),
+            (-1, "-1"),
+            (21, "21"),
+            (i32::MAX, "2147483647"),
+        ] {
+            let error = validate(Some(value)).unwrap_err();
+            assert_eq!(error.field, "logprobs");
+            assert_eq!(error.value, expected);
+        }
+    }
+}
+
+#[test]
+fn engine_min_p_result_adapters_preserve_optional_scalar_contract() {
+    for validate in [vllm::validate_min_p, sglang::validate_min_p] {
+        for value in [None, Some(0.0), Some(-0.0), Some(0.5), Some(1.0)] {
+            assert!(validate(value).is_ok());
+        }
+        for value in [-0.01, 1.01, f32::NAN, f32::INFINITY, f32::NEG_INFINITY] {
+            let error = validate(Some(value)).unwrap_err();
+            assert_eq!(error.field, "min_p");
+            assert_eq!(error.message, "must be finite and in [0, 1]");
+            assert_eq!(error.value, value.to_string());
+            assert_eq!(error.to_string(), "min_p: must be finite and in [0, 1]");
+            assert!(std::error::Error::source(&error).is_none());
+        }
     }
 }

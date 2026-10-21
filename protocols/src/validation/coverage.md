@@ -31,12 +31,19 @@ all Python floats or JSON coercions. Validation does not mutate any request fiel
 do not have `min_p`, `top_k`, or `repetition_penalty` fields; their trait
 implementations do not invent them. Engine entry points re-export the shared
 `min_p` and exclusive-zero `top_p` predicates. Only these numeric predicates,
-not their framework diagnostics, are claimed equivalent.
+not their framework diagnostics, are claimed equivalent. The engine namespaces
+also expose `validate_min_p(Option<f32>)` adapters: None passes, finite [0, 1]
+passes, and other explicit values return a library error. Their optional input
+does not establish matching engine HTTP-null admission.
 
-The library's `ValidationError` identifies the field and its constraint.
+The library's `ValidationError` identifies the field, its constraint, and the
+rejected explicit number in `value: String`. The value uses Rust Display of the
+parsed number, including NaN and infinities, rather than the original JSON text.
+Formatting and allocation occur only on failure; None does not produce an error.
 Its display is `field: message`; it contains no transport status, backend error
 metadata, or server-specific numeric formatting. Consumers such as Dynamo can
-reuse predicates or adapt errors while retaining their existing diagnostics.
+use the Result helpers and one local adapter for `field` and `value` while
+retaining their existing diagnostics and error chains.
 
 ## Dedicated-server usage
 
