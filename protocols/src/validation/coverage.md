@@ -16,9 +16,13 @@ first failure:
 | 3. frequency_penalty | finite [-2, 2] | reuse OpenAI | reuse OpenAI |
 | 4. presence_penalty | finite [-2, 2] | reuse OpenAI | reuse OpenAI |
 | 5. completion logprobs | None or 0..=5 | None or 0..=20 | uncovered |
+| 6. n | None or 1..=128 | uncovered | uncovered |
+| 7. chat top_logprobs / completion best_of | None or 0..=20 | uncovered | uncovered |
 
-Position 5 applies only to legacy completions. Chat's boolean `logprobs` and
-`top_logprobs` are uncovered. The order is the library's declared composition;
+Position 5 applies only to legacy completions. Positions 6 and 7 are OpenAI-only
+checks appended after the existing checks. Chat's boolean `logprobs` relationship
+and completion best_of relationships to n/streaming are uncovered.
+The order is the library's declared composition;
 it does not claim to reproduce an engine's complete first-error order.
 
 All float field helpers accept `None` without inserting defaults. For these
@@ -44,6 +48,48 @@ Its display is `field: message`; it contains no transport status, backend error
 metadata, or server-specific numeric formatting. Consumers such as Dynamo can
 use the Result helpers and one local adapter for `field` and `value` while
 retaining their existing diagnostics and error chains.
+
+## Additional numeric operations and local policy boundaries
+
+The current official references explicitly provide this numeric metadata,
+rechecked on 2026-10-21; these are documented bounds, not inferred from field names:
+
+| Operation | Endpoint/reference | Explicit minimum | Explicit maximum |
+| --- | --- | --- | --- |
+| n | [Chat Completions](https://developers.openai.com/api/reference/resources/chat/subresources/completions/methods/create) and [Completions](https://developers.openai.com/api/reference/resources/completions/methods/create) | 1 | 128 |
+| best_of count | [Completions](https://developers.openai.com/api/reference/resources/completions/methods/create) | 0 | 20 |
+| top_logprobs count | [Chat Completions](https://developers.openai.com/api/reference/resources/chat/subresources/completions/methods/create) | 0 | 20 |
+
+The OpenAI count helpers take the existing `Option<u8>` representation and
+validate only these bounds. They do not insert defaults or check relationships.
+In particular, the OpenAI best_of prose says greater than n; Dynamo's local
+greater-than-or-equal relationship is not part of this extracted count operation.
+Batch totals and greedy sampling interactions also remain local. vLLM has
+configurable n/logprob limits; SGLang equivalence has not been established, so
+neither engine re-exports these three complete count validators.
+
+`openai::validate_logit_bias_value(f32)` checks the documented finite [-100,100]
+numeric range after the caller's precision conversion. It returns the existing
+`ValidationError` with field `logit_bias` and the rejected f32's Rust Display.
+It does not validate a map or run from the request traits. The caller must retain
+JSON numeric admission, token-ID restrictions, iteration order and per-entry
+error precedence. Dynamo's `as_f64() as f32` conversion can round a value just
+outside the f64 bounds onto an accepted f32 boundary; extraction must preserve
+that order. Original JSON values and map keys are never mutated by this helper.
+
+Whole-map extraction was rejected: OpenAI's tokenizer-ID documentation does not
+establish Dynamo's u32 lexical/range restriction. The pinned
+[vLLM conversion](https://github.com/vllm-project/vllm/blob/6d1daa9fe53f39a7b494cf6c8e433a73eec78a76/vllm/sampling_params.py#L488)
+parses Python integers and clamps bias values instead of rejecting their range.
+The pinned [SGLang check](https://github.com/sgl-project/sglang/blob/5569b14d26ffd94a8326889eca15a153e8f1b68b/python/sglang/srt/sampling/sampling_params.py#L272)
+uses vocabulary size for token IDs and does not establish the same value bounds.
+Neither engine reuses this rejecting value operation in the current slice.
+
+Stop validation also remains outside this extraction. OpenAI documents at most
+four text sequences. Dynamo's 32-item string/token-ID limit, empty-array rejection,
+and typed count errors differ. Pinned vLLM rejects empty strings but permits an
+empty stop list and has a configured count limit; SGLang's normalization does not
+establish the same empty-string rejection. A common full operation is not proven.
 
 ## Dedicated-server usage
 
@@ -111,11 +157,12 @@ No universal normalize-then-validate lifecycle is imposed on other fields.
 
 ## Uncovered checks
 
-All unlisted fields and cross-field rules remain uncovered, including `n`,
-`best_of`, chat logprob relationships, token limits, penalties absent from these
-owned types, required prompt/messages/model content, tools, stream options,
+All unlisted fields and cross-field rules remain uncovered, including engine
+n/best_of/top_logprobs counts, chat logprob relationships, token limits, penalties
+absent from these owned types, required prompt/messages/model content, tools, stream options,
 guided decoding, model capabilities, and backend dispatch checks. SGLang count
 rules remain unclassified. Trait success does not validate these concerns.
+Full logit-bias map admission and stop validation remain uncovered.
 Dynamo-specific constants, validators, normalization, and request composition
 remain in Dynamo; this crate has no Dynamo policy namespace.
 

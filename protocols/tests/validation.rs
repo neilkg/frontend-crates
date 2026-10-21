@@ -123,6 +123,135 @@ fn fixed_completion_logprobs_contract_has_distinguishing_counts() {
     );
 }
 
+/// Checks omission, inclusive endpoints, and the field/value diagnostics for count failures.
+#[test]
+fn openai_count_helpers_preserve_optional_bounds_and_diagnostics() {
+    type CountValidator = fn(Option<u8>) -> Result<(), ValidationError>;
+    let cases: [(CountValidator, &str, &str, u8, u8); 3] = [
+        (openai::validate_n, "n", "must be in [1, 128]", 1, 128),
+        (
+            openai::validate_top_logprobs,
+            "top_logprobs",
+            "must be in [0, 20]",
+            0,
+            20,
+        ),
+        (
+            openai::validate_best_of,
+            "best_of",
+            "must be in [0, 20]",
+            0,
+            20,
+        ),
+    ];
+    for (validate, field, message, minimum, maximum) in cases {
+        assert!(validate(None).is_ok());
+        for value in [minimum, maximum] {
+            assert!(validate(Some(value)).is_ok());
+        }
+        for value in [maximum + 1, u8::MAX] {
+            assert_eq!(
+                validate(Some(value)).unwrap_err(),
+                ValidationError {
+                    field,
+                    message,
+                    value: value.to_string(),
+                }
+            );
+        }
+    }
+    assert_eq!(openai::validate_n(Some(0)).unwrap_err().value, "0");
+}
+
+/// Preserves Dynamo's conversion-before-range-check behavior, including rounding and overflow.
+#[test]
+fn logit_bias_checks_the_callers_f32_boundary_without_clamping() {
+    for value in [-100.0, -0.0, 0.0, 100.0] {
+        assert!(openai::validate_logit_bias_value(value).is_ok());
+    }
+    for value in [-100.01, 100.01, f32::NAN, f32::NEG_INFINITY, f32::INFINITY] {
+        assert_eq!(
+            openai::validate_logit_bias_value(value).unwrap_err(),
+            ValidationError {
+                field: "logit_bias",
+                message: "must be finite and in [-100, 100]",
+                value: value.to_string(),
+            }
+        );
+    }
+    // Dynamo converts admitted JSON numbers before checking their numeric range.
+    for value in [-100.000_001_f64, 100.000_001] {
+        let json = serde_json::json!(value);
+        assert!(value.abs() > 100.0);
+        assert!(openai::validate_logit_bias_value(json.as_f64().unwrap() as f32).is_ok());
+        assert_eq!(json.as_f64(), Some(value));
+    }
+    let json = serde_json::json!(1e300);
+    assert_eq!(
+        openai::validate_logit_bias_value(json.as_f64().unwrap() as f32)
+            .unwrap_err()
+            .value,
+        "inf"
+    );
+}
+
+/// Checks appended OpenAI error order while keeping engine counts and relationships uncovered.
+#[test]
+fn openai_request_counts_follow_existing_checks_and_leave_relationships_uncovered() {
+    let mut chat = CreateChatCompletionRequest {
+        presence_penalty: Some(3.0),
+        n: Some(0),
+        top_logprobs: Some(21),
+        ..Default::default()
+    };
+    let before = chat.clone();
+    assert_eq!(
+        OpenAIValidation::validate(&chat).unwrap_err().field,
+        "presence_penalty"
+    );
+    assert_eq!(chat, before);
+    chat.presence_penalty = None;
+    assert_eq!(OpenAIValidation::validate(&chat).unwrap_err().field, "n");
+    assert!(VllmValidation::validate(&chat).is_ok());
+    assert!(SglangValidation::validate(&chat).is_ok());
+    chat.n = Some(1);
+    assert_eq!(
+        OpenAIValidation::validate(&chat).unwrap_err().field,
+        "top_logprobs"
+    );
+    chat.top_logprobs = Some(20);
+    chat.logprobs = Some(false);
+    assert!(OpenAIValidation::validate(&chat).is_ok());
+
+    let mut completion = CreateCompletionRequest {
+        logprobs: Some(6),
+        n: Some(0),
+        best_of: Some(21),
+        ..Default::default()
+    };
+    let before = completion.clone();
+    assert_eq!(
+        OpenAIValidation::validate(&completion).unwrap_err().field,
+        "logprobs"
+    );
+    assert_eq!(completion, before);
+    completion.logprobs = None;
+    assert_eq!(
+        OpenAIValidation::validate(&completion).unwrap_err().field,
+        "n"
+    );
+    assert!(VllmValidation::validate(&completion).is_ok());
+    assert!(SglangValidation::validate(&completion).is_ok());
+    completion.n = Some(1);
+    assert_eq!(
+        OpenAIValidation::validate(&completion).unwrap_err().field,
+        "best_of"
+    );
+    completion.best_of = Some(0);
+    completion.stream = Some(true);
+    assert!(OpenAIValidation::validate(&completion).is_ok());
+}
+
 #[test]
 fn all_request_traits_preserve_unspecified_values() {
     let chat = CreateChatCompletionRequest::default();

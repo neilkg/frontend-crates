@@ -124,10 +124,56 @@ pub mod openai {
         )
     }
 
+    /// Accepts unspecified chat top_logprobs or 0..=20, without mutation or defaults.
+    /// Other counts return a top_logprobs diagnostic. The relationship to chat's
+    /// boolean logprobs field is a separate, uncovered operation.
+    pub fn validate_top_logprobs(value: Option<u8>) -> Result<(), ValidationError> {
+        check(
+            value,
+            |value| value <= 20,
+            "top_logprobs",
+            "must be in [0, 20]",
+        )
+    }
+
+    /// Accepts unspecified n or 1..=128, without mutation or default insertion.
+    /// Other counts return an n diagnostic; batch totals and sampling interactions are separate.
+    pub fn validate_n(value: Option<u8>) -> Result<(), ValidationError> {
+        check(
+            value,
+            |value| (1..=128).contains(&value),
+            "n",
+            "must be in [1, 128]",
+        )
+    }
+
+    /// Accepts unspecified completion best_of or 0..=20, without mutation or defaults.
+    /// Other counts return a best_of diagnostic. Relationships to n and streaming
+    /// are separate, uncovered operations; this helper checks only the count.
+    pub fn validate_best_of(value: Option<u8>) -> Result<(), ValidationError> {
+        check(value, |value| value <= 20, "best_of", "must be in [0, 20]")
+    }
+
+    /// Checks a parsed f32 logit-bias value against the finite range [-100, 100].
+    /// Returns a logit_bias diagnostic for other values, without mutation or clamping.
+    ///
+    /// The caller owns JSON numeric admission, precision conversion, token-ID policy,
+    /// and map traversal order. This does not validate a complete logit_bias map.
+    /// The returned value uses Rust Display of this f32, not an earlier f64 or JSON lexeme.
+    pub fn validate_logit_bias_value(value: f32) -> Result<(), ValidationError> {
+        check(
+            Some(value),
+            |value| (-100.0..=100.0).contains(&value),
+            "logit_bias",
+            "must be finite and in [-100, 100]",
+        )
+    }
+
     /// Partial, read-only validation for the two owned completion request types.
     ///
     /// Order: temperature, top_p, frequency_penalty, presence_penalty, then
-    /// completion logprobs (legacy completion only). All other fields and cross-field
+    /// completion logprobs (legacy completion only), then n, then chat top_logprobs
+    /// or completion best_of. All other fields and cross-field
     /// checks are uncovered. None passes at this parsed boundary; engine JSON-null
     /// admission and model/runtime constraints are not covered. See module coverage.
     pub trait OpenAIValidation {
@@ -143,7 +189,8 @@ pub mod openai {
             validate_top_p(self.top_p)?;
             validate_frequency_penalty(self.frequency_penalty)?;
             validate_presence_penalty(self.presence_penalty)?;
-            Ok(())
+            validate_n(self.n)?;
+            validate_top_logprobs(self.top_logprobs)
         }
     }
 
@@ -154,7 +201,9 @@ pub mod openai {
             validate_top_p(self.top_p)?;
             validate_frequency_penalty(self.frequency_penalty)?;
             validate_presence_penalty(self.presence_penalty)?;
-            validate_completion_logprobs(self.logprobs.map(i32::from))
+            validate_completion_logprobs(self.logprobs.map(i32::from))?;
+            validate_n(self.n)?;
+            validate_best_of(self.best_of)
         }
     }
 }
