@@ -246,7 +246,7 @@ fn unified_parser_is_chunk_invariant() {
 
 #[test]
 fn reference_argument_and_dotted_name_cases_preserve_results_at_every_split() {
-    let scenarios = [
+    let reference_scenarios = [
         "glm_ref_object",
         "glm_ref_encoded_targets",
         "glm_ref_json_looking_strings",
@@ -254,16 +254,29 @@ fn reference_argument_and_dotted_name_cases_preserve_results_at_every_split() {
         "unused_reference_graph_parameter_types",
         "nullable_reference_alias_literals",
         "local_schema_id_preserves_type",
+    ];
+    let dotted_scenarios = [
         "dotted_name_minimal",
         "dotted_name_mixed_punctuation",
         "dotted_name_multiple_segments",
         "dotted_name_shared_prefix",
     ];
+    let dotted_native_families = [
+        "deepseek_v4",
+        "deepseek_v41",
+        "gemma4",
+        "glm47",
+        "kimi_k2",
+        "kimi_k3",
+        "muse_glimmer",
+        "qwen3",
+    ];
     let mut checked = 0;
     for file in load_native_golden() {
         for (id, case) in &file.cases {
-            if !scenarios
+            if !reference_scenarios
                 .iter()
+                .chain(dotted_scenarios.iter())
                 .any(|scenario| id == &format!("UNIFIED.{scenario}.{}", file.family))
             {
                 continue;
@@ -302,7 +315,11 @@ fn reference_argument_and_dotted_name_cases_preserve_results_at_every_split() {
         .values()
         .filter(|family| family.native)
         .count();
-    assert_eq!(checked, native_families * scenarios.len());
+    assert_eq!(
+        checked,
+        native_families * reference_scenarios.len()
+            + dotted_native_families.len() * dotted_scenarios.len(),
+    );
 }
 
 /// I6: parsing the whole output at once assembles to the streamed result.

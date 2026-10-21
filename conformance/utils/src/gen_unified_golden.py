@@ -36,6 +36,23 @@ TEMPLATE_FAMILIES = [f for f in FAMILIES if not _MANIFEST[f].get("grammar")]
 SHARED_FAMILIES = [f for f in FAMILIES if f != "deepseek_v41"]
 FAM_FILE = {f: r["golden_spec"] for f, r in _MANIFEST.items()}
 UNIFIED_FAMILIES = {f for f, r in _MANIFEST.items() if r.get("native")}
+DOTTED_NAME_SCENARIOS = frozenset({
+    "dotted_name_minimal",
+    "dotted_name_mixed_punctuation",
+    "dotted_name_multiple_segments",
+    "dotted_name_shared_prefix",
+})
+DOTTED_NAME_FAMILIES = frozenset({
+    "deepseek_v4",
+    "deepseek_v41",
+    "gemma4",
+    "glm47",
+    "gpt_oss",
+    "kimi_k2",
+    "kimi_k3",
+    "muse_glimmer",
+    "qwen3",
+})
 # Families whose unified parser accepts GUIDED tool output, declared in the manifest.
 # Every family with a native unified parser does today. The gate is kept rather than
 # deleted because "can this family honour a guided request mode" is a real per-family
@@ -2718,19 +2735,25 @@ def default_response_prefix(fam):
 def build_cases(fam):
     grammar = _MANIFEST[fam].get("grammar")
     if grammar is None:
-        return _build_cases(fam)
-    cases = {}
-    for key, original in _build_cases(grammar).items():
-        case = json.loads(json.dumps(original))
-        # Shared Qwen scenarios begin outside reasoning; Ultra's empty thought
-        # closes that default channel without disabling later reasoning markers.
-        if (case.get("init") or {}).get("starting_state", "None") == "None":
-            case["input"] = default_response_prefix(fam) + case["input"]
-            if "input_chunks" in case:
-                case["input_chunks"][0] = default_response_prefix(fam) + case["input_chunks"][0]
-        cases[key.rsplit(".", 1)[0] + "." + fam] = case
-    cases.update(_build_edge_cases(fam, DEFAULT_REASONING_CASES))
-    return cases
+        cases = _build_cases(fam)
+    else:
+        cases = {}
+        for key, original in _build_cases(grammar).items():
+            case = json.loads(json.dumps(original))
+            # Shared Qwen scenarios begin outside reasoning; Ultra's empty thought
+            # closes that default channel without disabling later reasoning markers.
+            if (case.get("init") or {}).get("starting_state", "None") == "None":
+                case["input"] = default_response_prefix(fam) + case["input"]
+                if "input_chunks" in case:
+                    case["input_chunks"][0] = default_response_prefix(fam) + case["input_chunks"][0]
+            cases[key.rsplit(".", 1)[0] + "." + fam] = case
+        cases.update(_build_edge_cases(fam, DEFAULT_REASONING_CASES))
+    return {
+        key: case
+        for key, case in cases.items()
+        if key.rsplit(".", 1)[0].removeprefix("UNIFIED.") not in DOTTED_NAME_SCENARIOS
+        or fam in DOTTED_NAME_FAMILIES
+    }
 
 
 def _build_cases(fam):
@@ -2879,6 +2902,8 @@ def scenario_families(scenario):
     uses this same declaration to render explicit n/a cells instead of
     silently dropping them.
     """
+    if scenario in DOTTED_NAME_SCENARIOS:
+        return DOTTED_NAME_FAMILIES
     for name, *_rest in CLEAN:
         if name == scenario:
             return frozenset(FAMILIES if scenario in DEEPSEEK_V41_SCENARIOS else SHARED_FAMILIES)
