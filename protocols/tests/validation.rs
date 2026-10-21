@@ -182,11 +182,13 @@ fn request_traits_select_engine_overrides_without_running_baseline_first() {
 #[test]
 fn all_traits_preserve_first_error_order_and_leave_requests_unchanged() {
     for validate in CHAT_VALIDATORS {
-        let mut request = CreateChatCompletionRequest::default();
-        request.temperature = Some(-1.0);
-        request.top_p = Some(-1.0);
-        request.frequency_penalty = Some(3.0);
-        request.presence_penalty = Some(3.0);
+        let mut request = CreateChatCompletionRequest {
+            temperature: Some(-1.0),
+            top_p: Some(-1.0),
+            frequency_penalty: Some(3.0),
+            presence_penalty: Some(3.0),
+            ..Default::default()
+        };
         let before = request.clone();
         assert_eq!(validate(&request).unwrap_err().field, "temperature");
         assert_eq!(request, before);
@@ -200,12 +202,14 @@ fn all_traits_preserve_first_error_order_and_leave_requests_unchanged() {
         assert!(validate(&request).is_ok());
     }
     for (index, validate) in COMPLETION_VALIDATORS.into_iter().enumerate() {
-        let mut request = CreateCompletionRequest::default();
-        request.temperature = Some(-1.0);
-        request.top_p = Some(-1.0);
-        request.frequency_penalty = Some(3.0);
-        request.presence_penalty = Some(3.0);
-        request.logprobs = Some(21);
+        let mut request = CreateCompletionRequest {
+            temperature: Some(-1.0),
+            top_p: Some(-1.0),
+            frequency_penalty: Some(3.0),
+            presence_penalty: Some(3.0),
+            logprobs: Some(21),
+            ..Default::default()
+        };
         let before = request.clone();
         assert_eq!(validate(&request).unwrap_err().field, "temperature");
         assert_eq!(request, before);
