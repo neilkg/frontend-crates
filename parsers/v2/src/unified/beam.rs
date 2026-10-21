@@ -178,6 +178,7 @@ struct BeamBoundary {
     json_keys: JsonKeys,
     /// Offset up to which parameter regions are known complete.
     scanned: usize,
+    at_eos: bool,
 }
 
 fn malformed(discard: usize, reason: &'static str) -> BodyScan {
@@ -194,6 +195,13 @@ impl InvokeBoundary for BeamBoundary {
         self.scanned = 0;
     }
 
+    fn channel_body_at_eos(&mut self, body: &str) -> BodyScan {
+        self.at_eos = true;
+        let result = self.channel_body(body, true);
+        self.at_eos = false;
+        result
+    }
+
     fn channel_body(&mut self, body: &str, flush: bool) -> BodyScan {
         let lenient = self.malformed != MalformedToolCallPolicy::Reject;
         loop {
@@ -202,7 +210,12 @@ impl InvokeBoundary for BeamBoundary {
             let at = self.scanned + (rest.len() - t.len());
             self.scanned = at;
             if t.is_empty() {
-                return if flush {
+                return if flush && self.at_eos {
+                    BodyScan::Complete {
+                        body_end: body.len(),
+                        consume: body.len(),
+                    }
+                } else if flush {
                     malformed(body.len(), "missing call terminator")
                 } else {
                     BodyScan::Wait
@@ -513,6 +526,7 @@ impl InvokeEmitter for BeamEmitter {
             malformed: self.malformed,
             json_keys: self.json_keys(recipient),
             scanned: 0,
+            at_eos: false,
         }))
     }
 
@@ -1310,6 +1324,46 @@ mod tests {
                         .iter()
                         .any(|e| matches!(e, UnifiedEvent::ToolCall { .. })),
                     "{tail}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn confirmed_eos_closes_complete_arguments_only() {
+        for (body, valid) in [
+            (LONDON, true),
+            ("", true),
+            ("<rfl:parameter name=\"location\">\nLondon\n", false),
+        ] {
+            let input = format!("{HDR}{body}");
+            for at in (0..=input.len()).filter(|&at| input.is_char_boundary(at)) {
+                let mut parser = beam_unified(&tools());
+                parser.set_tool_call_policy(constrained()).unwrap();
+                let mut events = parser.push(&input[..at]).unwrap();
+                events.extend(parser.push(&input[at..]).unwrap());
+                let finished = parser.finish_at_eos();
+                assert_eq!(finished.is_ok(), valid, "{input}, split {at}");
+                if let Ok(finished) = finished {
+                    events.extend(finished);
+                    assert_eq!(
+                        assemble(&events),
+                        vec![call(
+                            "weather",
+                            if body.is_empty() {
+                                json!({})
+                            } else {
+                                json!({"location": "London"})
+                            }
+                        )]
+                    );
+                    assert!(parser.finish_at_eos().is_err(), "finish remains single-use");
+                }
+                parser.reset();
+                parser.push(&input).unwrap();
+                assert!(
+                    parser.finish().is_err(),
+                    "reset must not retain EOS permission"
                 );
             }
         }
