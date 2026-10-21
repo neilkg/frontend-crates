@@ -256,7 +256,8 @@ pub(crate) fn value_framing(
 /// The value end and the offset to resume parsing: consume a closing tag, but
 /// leave a following parameter opener for the next iteration.
 ///
-/// `Lenient` is the reference regex (first closer). `ConstrainedJson` applies only
+/// `Lenient` follows the template newline framing when present. Compact legacy
+/// values retain their first-closer rule. `ConstrainedJson` applies only
 /// where the request constrained the output to JSON: a value that opens as a JSON
 /// string, object or array owns its strings, so a closer inside one is data, and an
 /// OPEN value waits rather than falling back to the first literal closer — otherwise a
@@ -267,7 +268,8 @@ pub(crate) fn value_framing(
 /// `SchemaConstrained` is resolved per key by [`value_framing`] BEFORE this call; passed
 /// here directly (no key metadata) it is the raw-text rule.
 pub(crate) fn param_value_end(after_key: &str, framing: ArgumentFraming) -> Option<(usize, usize)> {
-    let mut from = 0;
+    let framed = after_key.starts_with('\n');
+    let mut from = usize::from(framed);
     if framing == ArgumentFraming::ConstrainedJson {
         let lead = after_key.len() - after_key.trim_start_matches(['\n', ' ', '\t', '\r']).len();
         if after_key[lead..].starts_with(['"', '{', '[']) {
@@ -282,8 +284,15 @@ pub(crate) fn param_value_end(after_key: &str, framing: ArgumentFraming) -> Opti
     }
     let rest = &after_key[from..];
     [
-        rest.find(PARAM_CLOSE)
-            .map(|at| (from + at, from + at + PARAM_CLOSE.len())),
+        rest.find(if framed {
+            "\n</rfl:parameter>"
+        } else {
+            PARAM_CLOSE
+        })
+        .map(|at| {
+            let end = from + at + usize::from(framed);
+            (end, end + PARAM_CLOSE.len())
+        }),
         // Include the framing newline so `unframe` removes exactly one newline.
         rest.find(PARAM_FOLLOW)
             .map(|at| (from + at + 1, from + at + 1)),
