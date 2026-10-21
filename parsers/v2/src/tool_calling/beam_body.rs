@@ -28,6 +28,7 @@ use std::collections::{BTreeSet, HashMap, HashSet};
 
 const PARAM_OPEN: &str = "<rfl:parameter name=\"";
 const PARAM_CLOSE: &str = "</rfl:parameter>";
+pub(crate) const PARAM_FOLLOW: &str = "\n<rfl:parameter name=\"";
 
 /// Why a Beam body or header could not be decoded.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -264,8 +265,8 @@ pub(crate) fn value_framing(
     }
 }
 
-/// Where the value of a parameter ends: the offset of its `</rfl:parameter>`, or
-/// `None` while the value is still open.
+/// The value end and the offset to resume parsing: consume a closing tag, but
+/// leave a following parameter opener for the next iteration.
 ///
 /// `Lenient` is the reference regex (first closer). `ConstrainedJson` applies only
 /// where the request constrained the output to JSON: a value that opens as a JSON
@@ -277,23 +278,31 @@ pub(crate) fn value_framing(
 ///
 /// `SchemaConstrained` is resolved per key by [`value_framing`] BEFORE this call; passed
 /// here directly (no key metadata) it is the raw-text rule.
-pub(crate) fn param_value_end(after_key: &str, framing: ArgumentFraming) -> Option<usize> {
+pub(crate) fn param_value_end(after_key: &str, framing: ArgumentFraming) -> Option<(usize, usize)> {
+    let mut from = 0;
     if framing == ArgumentFraming::ConstrainedJson {
         let lead = after_key.len() - after_key.trim_start_matches(['\n', ' ', '\t', '\r']).len();
         if after_key[lead..].starts_with(['"', '{', '[']) {
             match json_span(&after_key[lead..]) {
                 JsonSpan::Complete(json_end) => {
-                    let from = lead + json_end;
-                    return after_key[from..]
-                        .find(PARAM_CLOSE)
-                        .map(|close| from + close);
+                    from = lead + json_end;
                 }
                 JsonSpan::Open => return None,
                 JsonSpan::Invalid => {}
             }
         }
     }
-    after_key.find(PARAM_CLOSE)
+    let rest = &after_key[from..];
+    [
+        rest.find(PARAM_CLOSE)
+            .map(|at| (from + at, from + at + PARAM_CLOSE.len())),
+        // Include the framing newline so `unframe` removes exactly one newline.
+        rest.find(PARAM_FOLLOW)
+            .map(|at| (from + at + 1, from + at + 1)),
+    ]
+    .into_iter()
+    .flatten()
+    .min_by_key(|&(end, _)| end)
 }
 
 /// The reference template's `\n?VALUE\n?`: exactly one framing newline on each side.
@@ -367,7 +376,7 @@ fn parse_parameters_by(
         };
         let key = &after_open[..key_end];
         let framing = framing_for(key);
-        let Some(value_end) = param_value_end(after_key, framing) else {
+        let Some((value_end, resume)) = param_value_end(after_key, framing) else {
             // A parameter that never closes is malformed in every reading: the builder's
             // contract rejects a partial call rather than serving the parameters around it.
             return Err(BeamBodyError::UnclosedParameter { offset: at });
@@ -377,7 +386,7 @@ fn parse_parameters_by(
             Some(slot) => slot.1 = value.to_string(),
             None => out.push((key.to_string(), value.to_string())),
         }
-        at += PARAM_OPEN.len() + key_end + 2 + value_end + PARAM_CLOSE.len();
+        at += PARAM_OPEN.len() + key_end + 2 + resume;
     }
 }
 
@@ -1320,7 +1329,7 @@ mod tests {
         for value in open {
             assert_eq!(param_value_end(value, constrained), None, "{value}");
             assert_eq!(
-                param_value_end(value, ArgumentFraming::Lenient),
+                param_value_end(value, ArgumentFraming::Lenient).map(|(end, _)| end),
                 value.find("</rfl:parameter>"),
                 "{value}"
             );
@@ -1332,10 +1341,17 @@ mod tests {
             ("London</rfl:parameter>", 6),
             ("\n{\"a\": 1}\n</rfl:parameter>", 10),
         ] {
-            assert_eq!(param_value_end(value, constrained), Some(end), "{value}");
+            assert_eq!(
+                param_value_end(value, constrained).map(|(end, _)| end),
+                Some(end),
+                "{value}"
+            );
         }
         // A value that opens as JSON but can never balance keeps the reference rule.
-        assert_eq!(param_value_end("{]</rfl:parameter>", constrained), Some(2));
+        assert_eq!(
+            param_value_end("{]</rfl:parameter>", constrained).map(|(end, _)| end),
+            Some(2)
+        );
     }
 
     #[test]

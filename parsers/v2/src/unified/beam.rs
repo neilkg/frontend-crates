@@ -49,7 +49,7 @@
 //! `JsonKeys`), because it recovers how the bytes were framed, not what they mean.
 
 use crate::tool_calling::beam_body::{
-    JsonKeys, held_json_keys, param_value_end, recipient_len, recipient_properties,
+    JsonKeys, PARAM_FOLLOW, held_json_keys, param_value_end, recipient_len, recipient_properties,
     typed_arguments, typed_value, unframe, value_framing, verbatim_string,
 };
 use crate::tool_calling::beam_py::{PyValue, dump_str, dump_str_fragment};
@@ -239,8 +239,8 @@ impl InvokeBoundary for BeamBoundary {
                 let value_from = at + PARAM_OPEN.len() + key_end + 2;
                 let framing = value_framing(self.framing, &self.json_keys, &after[..key_end]);
                 match param_value_end(&body[value_from..], framing) {
-                    Some(end) => {
-                        self.scanned = value_from + end + PARAM_CLOSE.len();
+                    Some((_, resume)) => {
+                        self.scanned = value_from + resume;
                         continue;
                     }
                     None if !flush => return BodyScan::Wait,
@@ -623,26 +623,29 @@ impl InvokeEmitter for BeamEmitter {
             if let Some(value) = open.value.as_mut() {
                 let after_key = &body[value.start..];
                 if value.incremental {
-                    let close = after_key.find(PARAM_CLOSE);
+                    let close = param_value_end(after_key, value.framing);
                     let safe_end = match close {
-                        Some(close) => value.start + close,
-                        None => body.len() - marker_prefix_suffix_len(after_key, [PARAM_CLOSE]),
+                        Some((end, _)) => value.start + end,
+                        None => {
+                            body.len()
+                                - marker_prefix_suffix_len(after_key, [PARAM_CLOSE, PARAM_FOLLOW])
+                        }
                     };
                     if safe_end > value.streamed {
                         value.append(&body[value.streamed..safe_end], &mut arguments);
                         value.streamed = safe_end;
                     }
-                    let Some(close) = close else {
+                    let Some((_, resume)) = close else {
                         break;
                     };
                     arguments.push('"');
                     value.json_text.push('"');
-                    open.cursor = value.start + close + PARAM_CLOSE.len();
+                    open.cursor = value.start + resume;
                     let value = open.value.take().expect("open value");
                     open.members.push((value.key, value.json_text));
                     continue;
                 }
-                let Some(end) = param_value_end(after_key, value.framing) else {
+                let Some((end, resume)) = param_value_end(after_key, value.framing) else {
                     break;
                 };
                 let schema = open.properties.as_ref().and_then(|p| p.get(&value.key));
@@ -652,7 +655,7 @@ impl InvokeEmitter for BeamEmitter {
                 dump_str(&value.key, &mut arguments);
                 arguments.push_str(": ");
                 arguments.push_str(&text);
-                open.cursor = value.start + end + PARAM_CLOSE.len();
+                open.cursor = value.start + resume;
                 let value = open.value.take().expect("open value");
                 open.members.push((value.key, text));
                 continue;
@@ -1139,6 +1142,44 @@ mod tests {
             HDR.replace("weather", "fn")
         );
         expect(&input, vec![call("fn", json!({"b": true, "n": 1.5}))]);
+    }
+
+    #[test]
+    fn next_parameter_ends_a_value_without_its_closing_tag() {
+        let tools = [declare(
+            "edit",
+            json!({"path": {"type": "string"}, "edits": {"type": "array", "items": {"type": "object"}}}),
+            Some(false),
+        )];
+        for (path, expected) in [
+            ("x.py", "x.py"),
+            ("x.py\n", "x.py\n"),
+            (
+                "x<rfl:parameter name=\"literal\">y",
+                "x<rfl:parameter name=\"literal\">y",
+            ),
+            (
+                "x\n<rfl:parameter names=\"literal\">y",
+                "x\n<rfl:parameter names=\"literal\">y",
+            ),
+        ] {
+            for (first, second) in [("path", "edits"), ("edits", "path")] {
+                for closer in ["", "</rfl:parameter>\n"] {
+                    let value = |key| if key == "path" { path } else { "[{\"a\":1}]" };
+                    let input = format!(
+                        "{}<rfl:parameter name=\"{first}\">\n{}\n{closer}<rfl:parameter name=\"{second}\">\n{}\n</rfl:parameter><|call|>",
+                        HDR.replace("weather", "edit"),
+                        value(first),
+                        value(second)
+                    );
+                    expect_streamed(
+                        &tools,
+                        &input,
+                        vec![call("edit", json!({"path": expected, "edits": [{"a": 1}]}))],
+                    );
+                }
+            }
+        }
     }
 
     #[test]
