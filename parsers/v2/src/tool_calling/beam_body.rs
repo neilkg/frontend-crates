@@ -308,10 +308,10 @@ pub(crate) fn value_framing(
     }
 }
 
-/// Where the value of a parameter ends: the offset of its `</rfl:parameter>`, or
-/// `None` while the value is still open.
+/// Where the value of a parameter ends, or `None` while it is still open.
 ///
-/// `Lenient` is the reference regex (first closer). `ConstrainedJson` applies only
+/// `Lenient` follows the template newline framing when present. Compact legacy
+/// values retain their first-closer rule. `ConstrainedJson` applies only
 /// where the request constrained the output to JSON: a value that opens as a JSON
 /// string, object or array owns its strings, so a closer inside one is data, and an
 /// OPEN value waits rather than falling back to the first literal closer — otherwise a
@@ -349,7 +349,8 @@ pub(crate) fn param_value_span_with(
     framing: ArgumentFraming,
     cursor: &mut ValueCursor,
 ) -> Option<(usize, usize)> {
-    let mut from = 0;
+    let framed = after_key.starts_with('\n');
+    let mut from = usize::from(framed);
     if framing == ArgumentFraming::ConstrainedJson {
         let lead = after_key.len() - after_key.trim_start_matches(['\n', ' ', '\t', '\r']).len();
         if after_key[lead..].starts_with(['"', '{', '[']) {
@@ -362,8 +363,18 @@ pub(crate) fn param_value_span_with(
     }
     let rest = &after_key[from..];
     let close = cursor
-        .find_closer(rest, PARAM_CLOSE)
-        .map(|c| (from + c, from + c + PARAM_CLOSE.len()));
+        .find_closer(
+            rest,
+            if framed {
+                "\n</rfl:parameter>"
+            } else {
+                PARAM_CLOSE
+            },
+        )
+        .map(|c| {
+            let end = from + c + usize::from(framed);
+            (end, end + PARAM_CLOSE.len())
+        });
     let follow = cursor
         .find_closer(rest, PARAM_FOLLOW)
         .map(|f| (from + f + 1, from + f + 1));

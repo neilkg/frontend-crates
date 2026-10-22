@@ -194,6 +194,7 @@ struct BeamBoundary {
     /// The recipient's schema admits an empty argument body (declared, nothing
     /// required), so the grammar lets the stream end right after the header.
     empty_body_ok: bool,
+    at_eos: bool,
 }
 
 fn malformed(discard: usize, reason: &'static str) -> BodyScan {
@@ -213,6 +214,13 @@ impl InvokeBoundary for BeamBoundary {
         self.open_value = ValueCursor::default();
     }
 
+    fn channel_body_at_eos(&mut self, body: &str) -> BodyScan {
+        self.at_eos = true;
+        let result = self.channel_body(body, true);
+        self.at_eos = false;
+        result
+    }
+
     fn channel_body(&mut self, body: &str, flush: bool) -> BodyScan {
         let lenient = self.malformed != MalformedToolCallPolicy::Reject;
         loop {
@@ -221,15 +229,16 @@ impl InvokeBoundary for BeamBoundary {
             let at = self.scanned + (rest.len() - t.len());
             self.scanned = at;
             if t.is_empty() {
-                // The serving grammar lets EOS end a call right after its last
-                // parameter, without the closer: a body of complete parameters is a
-                // call at the end of the stream. A header alone still is not.
-                return match (flush, self.complete) {
-                    (false, _) => BodyScan::Wait,
-                    (true, 0) if !self.empty_body_ok => {
+                // Preserve permissive EOF recovery; rejecting policies require confirmed EOS.
+                return match (flush, self.at_eos, self.complete) {
+                    (false, _, _) => BodyScan::Wait,
+                    (true, false, _) if !lenient => {
                         malformed(body.len(), "missing call terminator")
                     }
-                    (true, _) => BodyScan::Complete {
+                    (true, _, 0) if !self.empty_body_ok => {
+                        malformed(body.len(), "missing call terminator")
+                    }
+                    (true, _, _) => BodyScan::Complete {
                         body_end: at,
                         consume: at,
                     },
@@ -551,6 +560,7 @@ impl InvokeEmitter for BeamEmitter {
             open_from: 0,
             open_value: ValueCursor::default(),
             empty_body_ok: recipient_admits_empty_arguments(&self.tools, recipient) == Some(true),
+            at_eos: false,
         }))
     }
 
@@ -1060,6 +1070,13 @@ mod tests {
             for name in ["noop", "maybe"] {
                 for input in [header(name), format!("{}<|call|>", header(name))] {
                     for got in splits_with(&empty_body_tools(), &input, policy) {
+                        if malformed == MalformedToolCallPolicy::Reject && !input.ends_with(CALL) {
+                            assert!(
+                                got.is_err(),
+                                "unconfirmed EOF must not complete a held call"
+                            );
+                            continue;
+                        }
                         assert_eq!(
                             got.unwrap(),
                             vec![call(name, json!({}))],
@@ -1363,6 +1380,50 @@ mod tests {
     }
 
     #[test]
+    fn next_parameter_ends_a_value_without_its_closing_tag() {
+        let tools = [declare(
+            "edit",
+            json!({"path": {"type": "string"}, "edits": {"type": "array", "items": {"type": "object"}}}),
+            Some(false),
+        )];
+        for (path, expected) in [
+            ("x.py", "x.py"),
+            ("x</rfl:parameter>y", "x</rfl:parameter>y"),
+            ("</rfl:parameter>", "</rfl:parameter>"),
+            ("x.py\n", "x.py\n"),
+            (
+                "x<rfl:parameter name=\"literal\">y",
+                "x<rfl:parameter name=\"literal\">y",
+            ),
+            (
+                "x\n<rfl:parameter names=\"literal\">y",
+                "x\n<rfl:parameter names=\"literal\">y",
+            ),
+        ] {
+            for closer in ["", "</rfl:parameter>\n"] {
+                let input = format!(
+                    "{}<rfl:parameter name=\"path\">\n{path}\n{closer}<rfl:parameter name=\"edits\">\n[{{\"a\":1}}]\n</rfl:parameter><|call|>",
+                    HDR.replace("weather", "edit"),
+                );
+                expect_streamed(
+                    &tools,
+                    &input,
+                    vec![call("edit", json!({"path": expected, "edits": [{"a": 1}]}))],
+                );
+            }
+        }
+        let input = format!(
+            "{}<rfl:parameter name=\"edits\">\n[{{\"a\":1}}]\n<rfl:parameter name=\"path\">\nx.py\n</rfl:parameter><|call|>",
+            HDR.replace("weather", "edit"),
+        );
+        expect_streamed(
+            &tools,
+            &input,
+            vec![call("edit", json!({"path": "x.py", "edits": [{"a": 1}]}))],
+        );
+    }
+
+    #[test]
     fn channel_specific_terminators() {
         expect(
             "<|channel|>analysis<|message|>a<|call|>b<|return|>c<|end|>",
@@ -1516,19 +1577,9 @@ mod tests {
 
     #[test]
     fn strict_rejects_unterminated_header_only_and_malformed() {
-        // A delimited call that the stream ends after is a call (the serving grammar
-        // lets EOS stand for the closer), under the strict policy too.
-        for got in splits(&format!("{HDR}{LONDON}"), strict()) {
-            assert_eq!(
-                got.unwrap(),
-                vec![call("weather", json!({"location": "London"}))]
-            );
-        }
-        // `weather` requires nothing, so its header alone is the call `{}` as well.
-        for got in splits(HDR, strict()) {
-            assert_eq!(got.unwrap(), vec![call("weather", json!({}))]);
-        }
         for tail in [
+            format!("{HDR}{LONDON}"),
+            HDR.to_string(),
             format!("{HDR}<rfl:parameter name=\"location\">\nLondon\n"),
             format!("{HDR}<rfl:parameter name=\"location\">\nLondon\n</wrong><|call|>"),
             format!("{HDR}{LONDON}<|start|>assistant<|channel|>final<|message|>x<|return|>"),
@@ -1543,15 +1594,60 @@ mod tests {
                     "{error}"
                 );
             }
-            // `Drop` never dispatches a partial call either: an unterminated call and a
-            // call with an unclosed parameter are both gone (the builder's parser
-            // contract: `truncated_parameter`, `malformed_parameter`).
+            if tail == HDR || tail == format!("{HDR}{LONDON}") {
+                continue;
+            }
             for got in splits(&tail, ToolCallPolicy::default()) {
                 assert!(
                     !got.unwrap()
                         .iter()
                         .any(|e| matches!(e, UnifiedEvent::ToolCall { .. })),
                     "{tail}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn confirmed_eos_closes_complete_arguments_only() {
+        for (body, valid) in [
+            (LONDON, true),
+            ("", true),
+            ("<rfl:parameter name=\"location\">\nLondon\n", false),
+        ] {
+            let input = format!("{HDR}{body}");
+            for at in (0..=input.len()).filter(|&at| input.is_char_boundary(at)) {
+                let mut parser = beam_unified(&tools());
+                parser
+                    .set_tool_call_policy(ToolCallPolicy {
+                        malformed: MalformedToolCallPolicy::Reject,
+                        ..constrained()
+                    })
+                    .unwrap();
+                let mut events = parser.push(&input[..at]).unwrap();
+                events.extend(parser.push(&input[at..]).unwrap());
+                let finished = parser.finish_at_eos();
+                assert_eq!(finished.is_ok(), valid, "{input}, split {at}");
+                if let Ok(finished) = finished {
+                    events.extend(finished);
+                    assert_eq!(
+                        assemble(&events),
+                        vec![call(
+                            "weather",
+                            if body.is_empty() {
+                                json!({})
+                            } else {
+                                json!({"location": "London"})
+                            }
+                        )]
+                    );
+                    assert!(parser.finish_at_eos().is_err(), "finish remains single-use");
+                }
+                parser.reset();
+                parser.push(&input).unwrap();
+                assert!(
+                    parser.finish().is_err(),
+                    "reset must not retain EOS permission"
                 );
             }
         }
@@ -1643,7 +1739,11 @@ mod tests {
         let complete = "<|start|>assistant to=fn<|channel|>analysis <|constrain|>xml<|message|>";
         for policy in [strict(), ToolCallPolicy::default()] {
             for got in splits(complete, policy) {
-                assert_eq!(got.unwrap(), vec![call("fn", json!({}))]);
+                if policy.malformed == MalformedToolCallPolicy::Reject {
+                    assert!(got.is_err(), "unconfirmed EOF");
+                } else {
+                    assert_eq!(got.unwrap(), vec![call("fn", json!({}))]);
+                }
             }
         }
         for input in [
@@ -2391,11 +2491,8 @@ mod tests {
 
     const OBJECT_WITH_CLOSER: &str = r#"{"text":"a</rfl:parameter>b"}"#;
 
-    /// The call a raw-text `value` slot yields for [`OBJECT_WITH_CLOSER`]: the embedded
-    /// closer ends the value and the leftover `b"}` plus stray closer is junk the
-    /// template's tag search skips (the serving reference reads it the same way).
-    fn truncated_text_call(name: &str, key: &str) -> Vec<UnifiedEvent> {
-        vec![call(name, json!({key: "{\"text\":\"a"}))]
+    fn raw_text_call(name: &str, key: &str) -> Vec<UnifiedEvent> {
+        vec![call(name, json!({key: OBJECT_WITH_CLOSER}))]
     }
 
     fn no_calls(results: Vec<anyhow::Result<Vec<UnifiedEvent>>>, input: &str) {
@@ -2438,9 +2535,6 @@ mod tests {
                 vec![call("echo", json!({"value": want}))],
             );
         }
-        // Why the global modes are wrong for this grammar, unchanged: `ConstrainedJson`
-        // waits forever on a raw string that opens with a quote or brace, and `Lenient`
-        // closes the typed object at the embedded closer (the leftover is skipped junk).
         for value in ["\"unfinished", "{\"x\":\"unfinished", "{"] {
             let tools = [echo(string.clone(), Some(true))];
             let input = echo_call("echo", &[("value", value)]);
@@ -2452,7 +2546,10 @@ mod tests {
             &tools,
             &input,
             ToolCallPolicy::default(),
-            truncated_text_call("echo", "value"),
+            vec![call(
+                "echo",
+                json!({"value": {"text": "a</rfl:parameter>b"}}),
+            )],
         );
         // Under `ConstrainedJson` the object case still decodes (that mode is unchanged).
         expect_with(
@@ -2496,8 +2593,7 @@ mod tests {
     }
 
     /// Key ownership is per recipient: the strict tool's `value` owns JSON, the
-    /// unknown tools' `value` slots are raw text (so their embedded closer ends the
-    /// value and the leftover is skipped junk), a held tool's are JSON whatever its
+    /// unknown tools' `value` slots are raw text, a held tool's are JSON whatever its
     /// `strict` flag, and a later call does not lose, nor an earlier one leak, its key
     /// set.
     #[test]
@@ -2526,7 +2622,7 @@ mod tests {
                 plain_object(),
                 object_call.clone(),
                 call("plain", json!({"value": {"t": 1}})),
-                truncated_text_call("mystery", "value").remove(0),
+                raw_text_call("mystery", "value").remove(0),
                 object_call,
                 plain_object(),
             ],
@@ -2550,7 +2646,7 @@ mod tests {
             schema_constrained(),
             object_call.clone(),
         );
-        let raw_text = truncated_text_call("echo", "value");
+        let raw_text = raw_text_call("echo", "value");
         for strict in [Some(false), None] {
             let tools = [echo(object.clone(), strict)];
             expect_with(&tools, &input, schema_constrained(), object_call.clone());
@@ -2563,11 +2659,11 @@ mod tests {
             &tools,
             &other,
             schema_constrained(),
-            truncated_text_call("echo", "other"),
+            raw_text_call("echo", "other"),
         );
         let union = json!({"anyOf": [{"type": "string"}, {"type": "object"}]});
         let tools = [echo(union, Some(true))];
-        expect_with(&tools, &input, schema_constrained(), raw_text.clone());
+        expect_with(&tools, &input, schema_constrained(), object_call.clone());
         // A normalized local ref to an object schema owns JSON.
         let tools = [Tool {
             name: "echo".into(),
@@ -2593,13 +2689,11 @@ mod tests {
             echo(json!({"type": "string"}), Some(false)),
         ];
         let input = echo_call("echo", &[("value", OBJECT_WITH_CLOSER)]);
-        // The last declaration types `value` as a string, so the grammar framed it as
-        // raw text: the embedded closer ends the value.
         expect_with(
             &tools,
             &input,
             schema_constrained(),
-            truncated_text_call("echo", "value"),
+            raw_text_call("echo", "value"),
         );
         // Reversed: the last declaration is the object, framed and typed as JSON.
         let tools = [
@@ -2762,13 +2856,20 @@ mod tests {
                     vec![call("echo", json!({"value": raw}))],
                 );
             }
-            // The grammar emitted the slot raw, so an embedded closer ends it.
+            // Newline framing preserves the inline closer; schema typing still applies.
             let input = echo_call("echo", &[("value", OBJECT_WITH_CLOSER)]);
             expect_with(
                 std::slice::from_ref(&tool),
                 &input,
                 schema_constrained(),
-                truncated_text_call("echo", "value"),
+                vec![call(
+                    "echo",
+                    json!({"value": if tool.parameters["properties"]["value"]["type"] == "integer" {
+                        json!(OBJECT_WITH_CLOSER)
+                    } else {
+                        json!({"text": "a</rfl:parameter>b"})
+                    }}),
+                )],
             );
         }
         // An untyped union branch contributes no type: the slot stays JSON, and so does
