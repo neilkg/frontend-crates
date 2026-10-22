@@ -337,7 +337,6 @@ fn answer_text() -> Vec<Value> {
     ]
 }
 
-/// The template name class with held names excluded.
 fn other_names(names: &[&str]) -> String {
     if names.is_empty() {
         return NAME_PATTERN.to_string();
